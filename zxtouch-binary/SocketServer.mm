@@ -14,6 +14,7 @@ CFSocketRef socketRef;
 CFWriteStreamRef writeStreamRef = NULL;
 CFReadStreamRef readStreamRef = NULL;
 static NSMutableDictionary *socketClients = NULL;
+static NSMutableDictionary *socketClientBuffers = NULL;
 
 static void readStream(CFReadStreamRef readStream, CFStreamEventType eventype, void * clientCallBackInfo);
 static void TCPServerAcceptCallBack(CFSocketRef socket, CFSocketCallBackType type, CFDataRef address, const void *data, void *info);
@@ -365,15 +366,42 @@ static void readStream(CFReadStreamRef readStream, CFStreamEventType eventype, v
             CFIndex hasRead = CFReadStreamRead(readStream, readDataBuff, sizeof(readDataBuff));
 
             if (hasRead > 0) {
-                //don't know how it works, copied from https://www.educative.io/edpresso/splitting-a-string-using-strtok-in-c
-                for(char * charSep = strtok((char*)readDataBuff, "\r\n"); charSep != NULL; charSep = strtok(NULL, "\r\n")) {
-                    UInt8 *buff = (UInt8*)charSep;
+                id bufferKey = @((long)readStream);
+                NSMutableData *pending = [socketClientBuffers objectForKey:bufferKey];
+                if (!pending) {
+                    pending = [NSMutableData data];
+                    [socketClientBuffers setObject:pending forKey:bufferKey];
+                }
+                [pending appendBytes:readDataBuff length:(NSUInteger)hasRead];
+                NSData *delimiter = [NSData dataWithBytes:"\r\n" length:2];
+                while (true) {
+                    NSRange range = [pending rangeOfData:delimiter options:0 range:NSMakeRange(0, pending.length)];
+                    if (range.location == NSNotFound) {
+                        break;
+                    }
+                    NSData *lineData = [pending subdataWithRange:NSMakeRange(0, range.location)];
+                    NSUInteger remainingStart = range.location + range.length;
+                    if (remainingStart < pending.length) {
+                        NSData *remaining = [pending subdataWithRange:NSMakeRange(remainingStart, pending.length - remainingStart)];
+                        [pending setData:remaining];
+                    } else {
+                        [pending setLength:0];
+                    }
+                    NSUInteger lineLength = lineData.length;
+                    char *lineBuffer = (char *)malloc(lineLength + 1);
+                    if (!lineBuffer) {
+                        continue;
+                    }
+                    memcpy(lineBuffer, lineData.bytes, lineLength);
+                    lineBuffer[lineLength] = '\0';
+                    UInt8 *buff = (UInt8 *)lineBuffer;
                     id temp = [socketClients objectForKey:@((long)readStream)];
                     if (temp != nil) {
                         handleDaemonMessage(buff, (CFWriteStreamRef)[temp longValue]);
                     } else {
                         handleDaemonMessage(buff, NULL);
                     }
+                    free(lineBuffer);
                 }
             }
         }
@@ -419,6 +447,10 @@ static void TCPServerAcceptCallBack(CFSocketRef socket, CFSocketCallBackType typ
             CFReadStreamScheduleWithRunLoop(readStreamRef, CFRunLoopGetCurrent(), kCFRunLoopCommonModes);
 
             [socketClients setObject:@((long)writeStreamRef) forKey:@((long)readStreamRef)];
+            if (!socketClientBuffers) {
+                socketClientBuffers = [[NSMutableDictionary alloc] init];
+            }
+            [socketClientBuffers setObject:[NSMutableData data] forKey:@((long)readStreamRef)];
         }
         else
         {
