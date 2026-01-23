@@ -8,7 +8,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 
-#define ZXTOUCHD_PORT 6000
+#define ZXTOUCHD_PORT 6001
 #define ZXTOUCHD_ADDR "0.0.0.0"
 
 void socketServer();

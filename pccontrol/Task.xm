@@ -37,7 +37,7 @@ static void forwardTaskToDaemon(UInt8 *buff, CFWriteStreamRef writeStreamRef)
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(6000);
+    addr.sin_port = htons(6001);
     addr.sin_addr.s_addr = inet_addr("127.0.0.1");
     if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
         close(sock);
