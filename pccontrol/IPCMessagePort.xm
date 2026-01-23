@@ -110,16 +110,30 @@ static CFDataRef handleIPCMessage(CFMessagePortRef local, SInt32 msgid, CFDataRe
                             timeout.tv_usec = 0;
                             setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
                             send(sock, payload, strlen(payload), 0);
-                            char responseBuffer[4096];
-                            memset(responseBuffer, 0, sizeof(responseBuffer));
-                            ssize_t readSize = recv(sock, responseBuffer, sizeof(responseBuffer) - 1, 0);
+                            NSMutableData *responseData = [NSMutableData data];
+                            char responseBuffer[512];
+                            bool sawLineEnding = false;
+                            while (!sawLineEnding) {
+                                memset(responseBuffer, 0, sizeof(responseBuffer));
+                                ssize_t readSize = recv(sock, responseBuffer, sizeof(responseBuffer) - 1, 0);
+                                if (readSize <= 0) {
+                                    break;
+                                }
+                                [responseData appendBytes:responseBuffer length:(NSUInteger)readSize];
+                                if (memmem(responseBuffer, (size_t)readSize, "\r\n", 2) != NULL) {
+                                    sawLineEnding = true;
+                                }
+                                if ([responseData length] > 8192) {
+                                    break;
+                                }
+                            }
                             close(sock);
-                            if (readSize > 0) {
+                            if ([responseData length] > 0) {
                                 CFAbsoluteTime duration = CFAbsoluteTimeGetCurrent() - startTime;
-                                NSString *responseString = [NSString stringWithUTF8String:responseBuffer];
+                                NSString *responseString = [[NSString alloc] initWithData:responseData encoding:NSUTF8StringEncoding];
                                 NSLog(@"### com.zjx.springboard: IPC task response in %.3fs: %@", duration, responseString);
                                 zx_append_ipc_log([NSString stringWithFormat:@"TASK response in %.3fs: %@", duration, responseString ?: @"(null)"]);
-                                return CFDataCreate(kCFAllocatorDefault, (const UInt8 *)responseBuffer, (CFIndex)readSize);
+                                return CFDataCreate(kCFAllocatorDefault, (const UInt8 *)responseData.bytes, (CFIndex)responseData.length);
                             }
                         } else {
                             close(sock);

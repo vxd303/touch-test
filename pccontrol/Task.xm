@@ -52,12 +52,26 @@ static void forwardTaskToDaemon(UInt8 *buff, CFWriteStreamRef writeStreamRef)
     const char *newline = "\r\n";
     [payload appendBytes:newline length:strlen(newline)];
     send(sock, payload.bytes, payload.length, 0);
-    char responseBuffer[4096];
-    memset(responseBuffer, 0, sizeof(responseBuffer));
-    ssize_t readSize = recv(sock, responseBuffer, sizeof(responseBuffer) - 1, 0);
+    NSMutableData *responseData = [NSMutableData data];
+    char responseBuffer[512];
+    bool sawLineEnding = false;
+    while (!sawLineEnding) {
+        memset(responseBuffer, 0, sizeof(responseBuffer));
+        ssize_t readSize = recv(sock, responseBuffer, sizeof(responseBuffer) - 1, 0);
+        if (readSize <= 0) {
+            break;
+        }
+        [responseData appendBytes:responseBuffer length:(NSUInteger)readSize];
+        if (memmem(responseBuffer, (size_t)readSize, "\r\n", 2) != NULL) {
+            sawLineEnding = true;
+        }
+        if ([responseData length] > 8192) {
+            break;
+        }
+    }
     close(sock);
-    if (readSize > 0) {
-        notifyClient((UInt8 *)responseBuffer, writeStreamRef);
+    if ([responseData length] > 0) {
+        notifyClient((UInt8 *)responseData.bytes, writeStreamRef);
     } else {
         notifyClient((UInt8 *)"1;;daemon_no_response\r\n", writeStreamRef);
     }
