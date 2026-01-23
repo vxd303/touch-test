@@ -45,7 +45,7 @@ static void forwardTaskToDaemon(UInt8 *buff, CFWriteStreamRef writeStreamRef)
         return;
     }
     struct timeval timeout;
-    timeout.tv_sec = 5;
+    timeout.tv_sec = 30;
     timeout.tv_usec = 0;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     NSMutableData *payload = [NSMutableData dataWithBytes:buff length:strlen((char *)buff)];

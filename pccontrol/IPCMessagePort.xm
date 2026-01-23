@@ -106,7 +106,7 @@ static CFDataRef handleIPCMessage(CFMessagePortRef local, SInt32 msgid, CFDataRe
                         addr.sin_addr.s_addr = inet_addr("127.0.0.1");
                         if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
                             struct timeval timeout;
-                            timeout.tv_sec = 5;
+                            timeout.tv_sec = 30;
                             timeout.tv_usec = 0;
                             setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
                             send(sock, payload, strlen(payload), 0);
