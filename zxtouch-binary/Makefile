@@ -6,8 +6,8 @@ TOOL_NAME = zxtouchd zxtouchb
 zxtouchd_ARCH = arm64e arm64
 zxtouchb_ARCH = arm64e arm64
 
-zxtouchd_FILES = main.mm SocketServer.mm SBIPC.mm Common.xm Screen.xm ScreenMatch.xm TemplateMatch.xm TextRecognization/VKOcrManager.xm TextRecognization/TextRecognizer.xm
-zxtouchb_FILES = main.mm SocketServer.mm SBIPC.mm Common.xm Screen.xm ScreenMatch.xm TemplateMatch.xm TextRecognization/VKOcrManager.xm TextRecognization/TextRecognizer.xm
+zxtouchd_FILES = main.mm SocketServer.mm SBIPC.mm Common.xm Screen.xm ScreenMatch.xm TemplateMatch.xm Image.xm ColorPicker.xm TextRecognization/VKOcrManager.xm TextRecognization/TextRecognizer.xm
+zxtouchb_FILES = main.mm SocketServer.mm SBIPC.mm Common.xm Screen.xm ScreenMatch.xm TemplateMatch.xm Image.xm ColorPicker.xm TextRecognization/VKOcrManager.xm TextRecognization/TextRecognizer.xm
 
 zxtouchd_FRAMEWORKS = CoreFoundation UIKit CoreGraphics IOSurface Photos Vision CoreImage ImageIO
 zxtouchb_FRAMEWORKS = CoreFoundation UIKit CoreGraphics IOSurface Photos Vision CoreImage ImageIO

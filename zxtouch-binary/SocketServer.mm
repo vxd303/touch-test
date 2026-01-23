@@ -4,6 +4,7 @@
 #include "IPCConstants.h"
 #import "ScreenMatch.h"
 #import "Screen.h"
+#import "ColorPicker.h"
 #import "TextRecognization/TextRecognizer.h"
 #include <string.h>
 #include <ctype.h>
@@ -13,6 +14,7 @@ CFSocketRef socketRef;
 CFWriteStreamRef writeStreamRef = NULL;
 CFReadStreamRef readStreamRef = NULL;
 static NSMutableDictionary *socketClients = NULL;
+static NSMutableDictionary *socketClientBuffers = NULL;
 
 static void readStream(CFReadStreamRef readStream, CFStreamEventType eventype, void * clientCallBackInfo);
 static void TCPServerAcceptCallBack(CFSocketRef socket, CFSocketCallBackType type, CFDataRef address, const void *data, void *info);
@@ -29,12 +31,27 @@ static dispatch_queue_t ipcQueue()
     return queue;
 }
 
-static int getTaskTypeFromBuffer(const char *buffer)
+static bool parseTaskHeader(const char *buffer, int *taskType, const char **eventData)
 {
-    if (!buffer || !isdigit(buffer[0]) || !isdigit(buffer[1])) {
-        return -1;
+    if (!buffer || !taskType || !eventData) {
+        return false;
     }
-    return (buffer[0] - '0') * 10 + (buffer[1] - '0');
+    const char *cursor = buffer;
+    while (*cursor && !isdigit(*cursor)) {
+        cursor++;
+    }
+    if (!isdigit(cursor[0]) || !isdigit(cursor[1])) {
+        return false;
+    }
+    const char firstDigit = cursor[0];
+    const char secondDigit = cursor[1];
+    cursor += 2;
+    *taskType = (firstDigit - '0') * 10 + (secondDigit - '0');
+    if (cursor[0] == ';' && cursor[1] == ';') {
+        cursor += 2;
+    }
+    *eventData = cursor;
+    return true;
 }
 
 static bool shouldRouteToSpringBoard(int taskType)
@@ -168,25 +185,30 @@ static void handleDaemonMessage(UInt8 *buff, CFWriteStreamRef client)
     }
     NSLog(@"### com.zjx.zxtouchd: received task payload: %s", buff);
     const char *buffer = (const char *)buff;
-    const int taskType = getTaskTypeFromBuffer(buffer);
+    const size_t taskPrefixLength = strlen(kZXTouchIPCCommandTaskPrefix);
+    const bool hasTaskPrefix = strncmp(buffer, kZXTouchIPCCommandTaskPrefix, taskPrefixLength) == 0;
+    const char *payload = hasTaskPrefix ? buffer + taskPrefixLength : buffer;
+    int taskType = -1;
+    const char *eventDataCString = NULL;
+    parseTaskHeader(payload, &taskType, &eventDataCString);
     bool isSpringBoardTask = taskType >= 0 && shouldRouteToSpringBoard(taskType);
 
-    if (strcmp(buffer, kZXTouchIPCCommandHome) == 0) {
+    if (strcmp(payload, kZXTouchIPCCommandHome) == 0) {
         isSpringBoardTask = true;
     }
 
         if (isSpringBoardTask) {
             char ipcPayload[4096];
-            if (strcmp(buffer, kZXTouchIPCCommandHome) == 0) {
+            if (strcmp(payload, kZXTouchIPCCommandHome) == 0) {
                 snprintf(ipcPayload, sizeof(ipcPayload), "%s", kZXTouchIPCCommandHome);
             } else {
-                snprintf(ipcPayload, sizeof(ipcPayload), "%s%s", kZXTouchIPCCommandTaskPrefix, buffer);
+                snprintf(ipcPayload, sizeof(ipcPayload), "%s%s", kZXTouchIPCCommandTaskPrefix, payload);
             }
             NSString *payloadString = [NSString stringWithUTF8String:ipcPayload];
             if (!payloadString) {
                 return;
             }
-            bool waitForResponse = strcmp(buffer, kZXTouchIPCCommandHome) == 0
+            bool waitForResponse = strcmp(payload, kZXTouchIPCCommandHome) == 0
                 ? true
                 : shouldWaitForResponse(taskType);
             __block CFDataRef responseData = NULL;
@@ -216,13 +238,17 @@ static void handleDaemonMessage(UInt8 *buff, CFWriteStreamRef client)
         return;
     }
 
-    // Daemon-side heavy tasks (refactor): template match, OCR, screenshot.
-    UInt8 *eventData = (UInt8 *)buffer + 0x2;
-
     auto writeCString = ^(const char *cstr) {
         if (!client || !cstr) { return; }
         CFWriteStreamWrite(client, (const UInt8 *)cstr, (CFIndex)strlen(cstr));
     };
+
+    // Daemon-side heavy tasks (refactor): template match, OCR, screenshot.
+    UInt8 *eventData = (UInt8 *)eventDataCString;
+    if (!eventData) {
+        writeCString("1;;invalid_task\r\n");
+        return;
+    }
 
     @autoreleasepool {
         switch (taskType) {
@@ -234,6 +260,40 @@ static void handleDaemonMessage(UInt8 *buff, CFWriteStreamRef client)
                 } else {
                     NSString *resp = [NSString stringWithFormat:@"0;;%.2f;;%.2f;;%.2f;;%.2f\r\n",
                                       result.origin.x, result.origin.y, result.size.width, result.size.height];
+                    writeCString([resp UTF8String]);
+                }
+                break;
+            }
+            case 23: { // TASK_COLOR_PICKER
+                NSError *err = nil;
+                NSDictionary *color = getRGBFromRawData(eventData, &err);
+                if (err) {
+                    writeCString([[err localizedDescription] UTF8String]);
+                } else {
+                    NSString *resp = [NSString stringWithFormat:@"0;;%@;;%@;;%@\r\n",
+                                      color[@"red"], color[@"green"], color[@"blue"]];
+                    writeCString([resp UTF8String]);
+                }
+                break;
+            }
+            case 27: { // TASK_TEXT_RECOGNIZER
+                NSError *err = nil;
+                NSString *result = performTextRecognizerTextFromRawData(eventData, &err);
+                if (err) {
+                    writeCString([[err localizedDescription] UTF8String]);
+                } else {
+                    NSString *resp = [NSString stringWithFormat:@"0;;%@\r\n", result ?: @""];
+                    writeCString([resp UTF8String]);
+                }
+                break;
+            }
+            case 28: { // TASK_COLOR_SEARCHER
+                NSError *err = nil;
+                NSString *result = searchRGBFromRawData(eventData, &err);
+                if (err) {
+                    writeCString([[err localizedDescription] UTF8String]);
+                } else {
+                    NSString *resp = [NSString stringWithFormat:@"0;;%@\r\n", result ?: @""];
                     writeCString([resp UTF8String]);
                 }
                 break;
@@ -306,15 +366,42 @@ static void readStream(CFReadStreamRef readStream, CFStreamEventType eventype, v
             CFIndex hasRead = CFReadStreamRead(readStream, readDataBuff, sizeof(readDataBuff));
 
             if (hasRead > 0) {
-                //don't know how it works, copied from https://www.educative.io/edpresso/splitting-a-string-using-strtok-in-c
-                for(char * charSep = strtok((char*)readDataBuff, "\r\n"); charSep != NULL; charSep = strtok(NULL, "\r\n")) {
-                    UInt8 *buff = (UInt8*)charSep;
+                id bufferKey = @((long)readStream);
+                NSMutableData *pending = [socketClientBuffers objectForKey:bufferKey];
+                if (!pending) {
+                    pending = [NSMutableData data];
+                    [socketClientBuffers setObject:pending forKey:bufferKey];
+                }
+                [pending appendBytes:readDataBuff length:(NSUInteger)hasRead];
+                NSData *delimiter = [NSData dataWithBytes:"\r\n" length:2];
+                while (true) {
+                    NSRange range = [pending rangeOfData:delimiter options:0 range:NSMakeRange(0, pending.length)];
+                    if (range.location == NSNotFound) {
+                        break;
+                    }
+                    NSData *lineData = [pending subdataWithRange:NSMakeRange(0, range.location)];
+                    NSUInteger remainingStart = range.location + range.length;
+                    if (remainingStart < pending.length) {
+                        NSData *remaining = [pending subdataWithRange:NSMakeRange(remainingStart, pending.length - remainingStart)];
+                        [pending setData:remaining];
+                    } else {
+                        [pending setLength:0];
+                    }
+                    NSUInteger lineLength = lineData.length;
+                    char *lineBuffer = (char *)malloc(lineLength + 1);
+                    if (!lineBuffer) {
+                        continue;
+                    }
+                    memcpy(lineBuffer, lineData.bytes, lineLength);
+                    lineBuffer[lineLength] = '\0';
+                    UInt8 *buff = (UInt8 *)lineBuffer;
                     id temp = [socketClients objectForKey:@((long)readStream)];
                     if (temp != nil) {
                         handleDaemonMessage(buff, (CFWriteStreamRef)[temp longValue]);
                     } else {
                         handleDaemonMessage(buff, NULL);
                     }
+                    free(lineBuffer);
                 }
             }
         }
@@ -360,6 +447,10 @@ static void TCPServerAcceptCallBack(CFSocketRef socket, CFSocketCallBackType typ
             CFReadStreamScheduleWithRunLoop(readStreamRef, CFRunLoopGetCurrent(), kCFRunLoopCommonModes);
 
             [socketClients setObject:@((long)writeStreamRef) forKey:@((long)readStreamRef)];
+            if (!socketClientBuffers) {
+                socketClientBuffers = [[NSMutableDictionary alloc] init];
+            }
+            [socketClientBuffers setObject:[NSMutableData data] forKey:@((long)readStreamRef)];
         }
         else
         {

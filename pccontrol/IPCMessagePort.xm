@@ -5,6 +5,10 @@
 #import <Foundation/Foundation.h>
 #import <CoreFoundation/CoreFoundation.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
 
 // File logging fallback for devices without unified logging CLI.
 static NSString *const kZXTouchIPCLogPath = @"/var/mobile/Library/ZXTouch/ipc_pccontrol.log";
@@ -77,6 +81,66 @@ static CFDataRef handleIPCMessage(CFMessagePortRef local, SInt32 msgid, CFDataRe
             CFAbsoluteTime startTime = CFAbsoluteTimeGetCurrent();
             NSLog(@"### com.zjx.springboard: IPC task start: %@", rawTask);
             zx_append_ipc_log([NSString stringWithFormat:@"TASK start: %@", rawTask]);
+            NSString *trimmedTask = [rawTask stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            int taskType = -1;
+            if ([trimmedTask length] >= 2) {
+                unichar first = [trimmedTask characterAtIndex:0];
+                unichar second = [trimmedTask characterAtIndex:1];
+                if ([[NSCharacterSet decimalDigitCharacterSet] characterIsMember:first]
+                    && [[NSCharacterSet decimalDigitCharacterSet] characterIsMember:second]) {
+                    taskType = (int)(first - '0') * 10 + (int)(second - '0');
+                }
+            }
+            if (taskType == TASK_TEMPLATE_MATCH
+                || taskType == TASK_COLOR_PICKER
+                || taskType == TASK_TEXT_RECOGNIZER
+                || taskType == TASK_COLOR_SEARCHER) {
+                const char *payload = [[trimmedTask stringByAppendingString:@"\r\n"] UTF8String];
+                if (payload) {
+                    int sock = socket(AF_INET, SOCK_STREAM, 0);
+                    if (sock >= 0) {
+                        struct sockaddr_in addr;
+                        memset(&addr, 0, sizeof(addr));
+                        addr.sin_family = AF_INET;
+                        addr.sin_port = htons(6001);
+                        addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+                        if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+                            struct timeval timeout;
+                            timeout.tv_sec = 30;
+                            timeout.tv_usec = 0;
+                            setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+                            send(sock, payload, strlen(payload), 0);
+                            NSMutableData *responseData = [NSMutableData data];
+                            char responseBuffer[512];
+                            bool sawLineEnding = false;
+                            while (!sawLineEnding) {
+                                memset(responseBuffer, 0, sizeof(responseBuffer));
+                                ssize_t readSize = recv(sock, responseBuffer, sizeof(responseBuffer) - 1, 0);
+                                if (readSize <= 0) {
+                                    break;
+                                }
+                                [responseData appendBytes:responseBuffer length:(NSUInteger)readSize];
+                                if (memmem(responseBuffer, (size_t)readSize, "\r\n", 2) != NULL) {
+                                    sawLineEnding = true;
+                                }
+                                if ([responseData length] > 8192) {
+                                    break;
+                                }
+                            }
+                            close(sock);
+                            if ([responseData length] > 0) {
+                                CFAbsoluteTime duration = CFAbsoluteTimeGetCurrent() - startTime;
+                                NSString *responseString = [[NSString alloc] initWithData:responseData encoding:NSUTF8StringEncoding];
+                                NSLog(@"### com.zjx.springboard: IPC task response in %.3fs: %@", duration, responseString);
+                                zx_append_ipc_log([NSString stringWithFormat:@"TASK response in %.3fs: %@", duration, responseString ?: @"(null)"]);
+                                return CFDataCreate(kCFAllocatorDefault, (const UInt8 *)responseData.bytes, (CFIndex)responseData.length);
+                            }
+                        } else {
+                            close(sock);
+                        }
+                    }
+                }
+            }
             CFWriteStreamRef responseStream = CFWriteStreamCreateWithAllocatedBuffers(kCFAllocatorDefault,
                                                                                       kCFAllocatorDefault);
             if (responseStream) {

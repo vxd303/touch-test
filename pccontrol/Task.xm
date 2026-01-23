@@ -17,8 +17,65 @@
 #include "UpdateCache.h"
 #include "Screen.h"
 #include "NSTask.h"
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
 
 extern CFRunLoopRef recordRunLoop;
+
+static void forwardTaskToDaemon(UInt8 *buff, CFWriteStreamRef writeStreamRef)
+{
+    if (!buff || !writeStreamRef) {
+        return;
+    }
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        notifyClient((UInt8 *)"1;;daemon_socket_error\r\n", writeStreamRef);
+        return;
+    }
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(6001);
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        close(sock);
+        notifyClient((UInt8 *)"1;;daemon_connect_failed\r\n", writeStreamRef);
+        return;
+    }
+    struct timeval timeout;
+    timeout.tv_sec = 30;
+    timeout.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    NSMutableData *payload = [NSMutableData dataWithBytes:buff length:strlen((char *)buff)];
+    const char *newline = "\r\n";
+    [payload appendBytes:newline length:strlen(newline)];
+    send(sock, payload.bytes, payload.length, 0);
+    NSMutableData *responseData = [NSMutableData data];
+    char responseBuffer[512];
+    bool sawLineEnding = false;
+    while (!sawLineEnding) {
+        memset(responseBuffer, 0, sizeof(responseBuffer));
+        ssize_t readSize = recv(sock, responseBuffer, sizeof(responseBuffer) - 1, 0);
+        if (readSize <= 0) {
+            break;
+        }
+        [responseData appendBytes:responseBuffer length:(NSUInteger)readSize];
+        if (memmem(responseBuffer, (size_t)readSize, "\r\n", 2) != NULL) {
+            sawLineEnding = true;
+        }
+        if ([responseData length] > 8192) {
+            break;
+        }
+    }
+    close(sock);
+    if ([responseData length] > 0) {
+        notifyClient((UInt8 *)responseData.bytes, writeStreamRef);
+    } else {
+        notifyClient((UInt8 *)"1;;daemon_no_response\r\n", writeStreamRef);
+    }
+}
 
 /*
 get task type
@@ -187,8 +244,7 @@ void processTask(UInt8 *buff, CFWriteStreamRef writeStreamRef)
     else if (taskType == TASK_TEMPLATE_MATCH)
     {
         // Refactored: template matching now runs inside zxtouchd to reduce SpringBoard RAM/CPU usage.
-        // If this branch is hit, the caller is likely using an older daemon.
-        notifyClient((UInt8*)"-1;;TASK_TEMPLATE_MATCH moved to zxtouchd. Please update daemon.\r\n", writeStreamRef);
+        forwardTaskToDaemon(buff, writeStreamRef);
     }
     else if (taskType == TASK_SHOW_TOAST)
     {
@@ -208,7 +264,7 @@ void processTask(UInt8 *buff, CFWriteStreamRef writeStreamRef)
     else if (taskType == TASK_COLOR_PICKER)
     {
         // Refactored: color picking now runs inside zxtouchd to reduce SpringBoard RAM/CPU usage.
-    notifyClient((UInt8*)"-1;;TASK_COLOR_PICKER moved to zxtouchd. Please update daemon.\r\n", writeStreamRef);
+        forwardTaskToDaemon(buff, writeStreamRef);
     }
     else if (taskType == TASK_TEXT_INPUT)
     {
@@ -258,12 +314,12 @@ void processTask(UInt8 *buff, CFWriteStreamRef writeStreamRef)
     else if (taskType == TASK_TEXT_RECOGNIZER)
     {
         // Refactored: OCR now runs inside zxtouchd to reduce SpringBoard RAM/CPU usage.
-        notifyClient((UInt8*)"-1;;TASK_TEXT_RECOGNIZER moved to zxtouchd. Please update daemon.\r\n", writeStreamRef);
+        forwardTaskToDaemon(buff, writeStreamRef);
     }
     else if (taskType == TASK_COLOR_SEARCHER)
     {
         // Refactored: color searching now runs inside zxtouchd to reduce SpringBoard RAM/CPU usage.
-    notifyClient((UInt8*)"-1;;TASK_COLOR_SEARCHER moved to zxtouchd. Please update daemon.\r\n", writeStreamRef);
+        forwardTaskToDaemon(buff, writeStreamRef);
     }
     else if (taskType == TASK_HARDWARE_KEY)
     {
